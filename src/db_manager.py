@@ -481,9 +481,13 @@ class DatabaseManager:
             logger.error(f"Помилка отримання свічок для {symbol}: {e}")
             return pd.DataFrame()
     
-    async def get_candles_for_analysis(self, symbol: str, timeframe: str, limit: int = 50) -> pd.DataFrame:
+    async def get_candles_for_analysis(self, symbol: str, timeframe: str, limit: int = None) -> pd.DataFrame:
         """Отримання свічок для аналізу стратегії з оптимізованим запитом"""
         try:
+            # Use configurable candle amount from settings if limit is not specified
+            if limit is None:
+                limit = TRADING_CONFIG.get('load_candles_amount', 300)
+            
             table_name = self._get_table_name(symbol)
             
             # Використовуємо обмежений набір колонок для кращої продуктивності

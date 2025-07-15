@@ -47,7 +47,8 @@ TRADING_CONFIG = {
     'GALAUSDT', 'APEUSDT', 'GMTUSDT', 'OPUSDT', 'APTUSDT', 'ARBUSDT', 'SUIUSDT', 'BLURUSDT',
     'SEIUSDT', 'TIAUSDT'],
     'timeframe': '5',  # хвилини
-    'load_candles_amount': 300,
+    'load_candles_amount': 500,  # Increased from 300 to 500 for better indicator calculation
+    'min_candles_for_strategy': 150,  # Minimum candles required for strategy analysis
     'min_order_amount': 10,  # відсоток від балансу на одну угоду
     'max_orders_qty': 5,     # максимальна кількість одночасних позицій
     'leverage': 10,          # кредитне плече

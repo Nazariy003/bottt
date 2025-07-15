@@ -283,8 +283,27 @@ class BybitAPIManager:
                         return None  # Або повернути None, якщо не хочемо піднімати виняток
 
             except Exception as e:
+                # Handle specific exception types with better error recovery
+                error_type = type(e).__name__
+                error_msg = str(e).lower()
+                
+                # Timeout and connection errors - retry with exponential backoff
+                if ('timeout' in error_msg or 'connection' in error_msg or 
+                    'network' in error_msg or 'unreachable' in error_msg or
+                    error_type in ['TimeoutError', 'ConnectTimeoutError', 'ReadTimeoutError', 
+                                   'ConnectionError', 'ClientConnectorError']):
+                    
+                    retry_delay = self.config['retry_delay'] * (2 ** attempt)  # Exponential backoff
+                    logger.warning(f"🌐 Connection/timeout error ({error_type}): {e}. "
+                                 f"Retry {attempt + 1}/{self.config['retry_attempts']} in {retry_delay:.1f}s")
+                    
+                    if attempt < self.config['retry_attempts'] - 1:
+                        await asyncio.sleep(retry_delay)
+                        last_exception = e
+                        continue
+                
                 # Перевіряємо, чи це помилка "not modified" (34040) з pybit.exceptions.InvalidRequestError
-                if isinstance(e, Exception) and hasattr(e, 'status_code') and e.status_code == 34040:  # pybit може використовувати status_code
+                elif isinstance(e, Exception) and hasattr(e, 'status_code') and e.status_code == 34040:  # pybit може використовувати status_code
                     logger.warning(f"Перехоплено помилку 'not modified' (34040) з pybit: {e}. Повертаємо як успіх.")
                     # Нам потрібна структура відповіді, яку очікує вищий рівень.
                     # pybit.exceptions.InvalidRequestError містить message, status_code, response.
@@ -313,6 +332,27 @@ class BybitAPIManager:
                             "retExtInfo": {}, 
                             "time": int(time.time() * 1000)
                         }
+                
+                # Rate limiting errors - special handling
+                elif 'rate limit' in error_msg or '10002' in error_msg:
+                    rate_limit_delay = self.config['retry_delay'] * (attempt + 2)  # Longer delay for rate limits
+                    logger.warning(f"🚦 Rate limit error: {e}. Waiting {rate_limit_delay:.1f}s before retry {attempt + 1}/{self.config['retry_attempts']}")
+                    
+                    if attempt < self.config['retry_attempts'] - 1:
+                        await asyncio.sleep(rate_limit_delay)
+                        last_exception = e
+                        continue
+
+                # API server errors (5xx) - retry with backoff
+                elif ('server error' in error_msg or '50' in error_msg[:10] or
+                      'internal server error' in error_msg):
+                    server_retry_delay = self.config['retry_delay'] * (1.5 ** attempt)
+                    logger.warning(f"🔧 Server error: {e}. Retry {attempt + 1}/{self.config['retry_attempts']} in {server_retry_delay:.1f}s")
+                    
+                    if attempt < self.config['retry_attempts'] - 1:
+                        await asyncio.sleep(server_retry_delay)
+                        last_exception = e
+                        continue
 
                 logger.error(f"Помилка запиту (спроба {attempt + 1}/{self.config['retry_attempts']}): {e}", exc_info=False)  # Не логуємо повний трейсбек тут
                 last_exception = e
@@ -530,31 +570,42 @@ class BybitAPIManager:
             for execution in executions_data:
                 try:
                     exec_time_ms = int(execution.get('execTime', 0))
+                    
+                    # Helper function to safely convert to float with error handling for empty strings
+                    def safe_float(value, default=0.0):
+                        try:
+                            if value is None or value == '' or value == 'null':
+                                return default
+                            return float(value)
+                        except (ValueError, TypeError):
+                            logger.warning(f"⚠️ Could not convert value '{value}' to float, using default {default}")
+                            return default
+                    
                     formatted_execution = {
                         'symbol': execution.get('symbol'),
                         'order_id': execution.get('orderId'),
                         'execution_id': execution.get('execId'),
                         'side': execution.get('side'),  # Buy/Sell
                         'order_type': execution.get('orderType'),  # Market/Limit
-                        'price': float(execution.get('execPrice', 0)),
-                        'quantity': float(execution.get('execQty', 0)),
-                        'exec_value': float(execution.get('execValue', 0)),
-                        'exec_fee': float(execution.get('execFee', 0)),
-                        'fee_rate': float(execution.get('feeRate', 0)),
+                        'price': safe_float(execution.get('execPrice')),
+                        'quantity': safe_float(execution.get('execQty')),
+                        'exec_value': safe_float(execution.get('execValue')),
+                        'exec_fee': safe_float(execution.get('execFee')),
+                        'fee_rate': safe_float(execution.get('feeRate')),
                         'exec_time': exec_time_ms,
                         'exec_time_formatted': datetime.fromtimestamp(
                             exec_time_ms / 1000, tz=timezone.utc
                         ).strftime('%Y-%m-%d %H:%M:%S UTC'),
                         'is_maker': execution.get('isMaker', False),
-                        'closed_size': float(execution.get('closedSize', 0)),  # ⭐ Важливо для аналізу
+                        'closed_size': safe_float(execution.get('closedSize')),  # ⭐ Важливо для аналізу
                         'last_liquidity_ind': execution.get('lastLiquidityInd', ''),
-                        'mark_price': float(execution.get('markPrice', 0)),
-                        'index_price': float(execution.get('indexPrice', 0)),
+                        'mark_price': safe_float(execution.get('markPrice')),
+                        'index_price': safe_float(execution.get('indexPrice')),
                         'block_trade_id': execution.get('blockTradeId', ''),
-                        'leaf_qty': float(execution.get('leavesQty', 0)),
-                        'cum_exec_qty': float(execution.get('cumExecQty', 0)),
-                        'cum_exec_value': float(execution.get('cumExecValue', 0)),
-                        'cum_exec_fee': float(execution.get('cumExecFee', 0)),
+                        'leaf_qty': safe_float(execution.get('leavesQty')),
+                        'cum_exec_qty': safe_float(execution.get('cumExecQty')),
+                        'cum_exec_value': safe_float(execution.get('cumExecValue')),
+                        'cum_exec_fee': safe_float(execution.get('cumExecFee')),
                         
                         # 🆕 Додаткові поля для аналізу
                         'exec_datetime': datetime.fromtimestamp(exec_time_ms / 1000, tz=timezone.utc),
@@ -1744,6 +1795,58 @@ class BybitAPIManager:
         side: 'Buy' для закриття Short позиції, 'Sell' для закриття Long позиції.
         """
         try:
+            # Validate position exists before placing reduce-only order
+            logger.info(f"🔍 Validating position for {symbol} before placing reduce-only order")
+            
+            positions = await self.get_positions(symbol=symbol)
+            active_position = None
+            
+            if positions:
+                for pos in positions:
+                    if (pos.get('symbol') == symbol and 
+                        float(pos.get('size', 0)) > 0.000001):
+                        active_position = pos
+                        break
+            
+            if not active_position:
+                error_msg = f"❌ No active position found for {symbol}. Cannot place reduce-only order."
+                logger.warning(error_msg)
+                return {
+                    "retCode": 110017,  # Position error code similar to Bybit's
+                    "retMsg": "Position not exist or already closed",
+                    "result": {}, 
+                    "retExtInfo": {"validation_error": "No active position"},
+                    "time": int(time.time() * 1000)
+                }
+            
+            position_size = float(active_position.get('size', 0))
+            position_side = active_position.get('side', '')
+            requested_qty = float(qty) if qty else 0
+            
+            # Validate order direction matches position
+            if ((position_side == 'Buy' and side != 'Sell') or 
+                (position_side == 'Sell' and side != 'Buy')):
+                error_msg = f"❌ Invalid reduce-only order direction for {symbol}. Position: {position_side}, Order: {side}"
+                logger.warning(error_msg)
+                return {
+                    "retCode": 110018, 
+                    "retMsg": "Invalid reduce-only order direction",
+                    "result": {}, 
+                    "retExtInfo": {
+                        "validation_error": "Order direction mismatch",
+                        "position_side": position_side,
+                        "order_side": side
+                    },
+                    "time": int(time.time() * 1000)
+                }
+            
+            # Validate quantity doesn't exceed position size
+            if requested_qty > position_size:
+                logger.warning(f"⚠️ Reduce-only quantity {requested_qty} exceeds position size {position_size} for {symbol}. Adjusting to position size.")
+                qty = f"{position_size:.8f}".rstrip('0').rstrip('.')
+            
+            logger.info(f"✅ Position validation passed for {symbol}: {position_side} {position_size}, reduce order: {side} {qty}")
+            
             params = {
                 "category": "linear",
                 "symbol": symbol,

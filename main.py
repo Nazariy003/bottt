@@ -2110,8 +2110,11 @@ class TradingBot:
                 ) 
             )
             
-            if df.empty or len(df) < 50: # Мінімальна кількість свічок для аналізу
-                self.logger.warning(f"Відсутні або недостатньо даних для аналізу {symbol} ({len(df)} свічок)")
+            # Use configurable minimum candles for analysis
+            min_candles_for_analysis = TRADING_CONFIG.get('min_candles_for_strategy', 150)
+            
+            if df.empty or len(df) < min_candles_for_analysis:
+                self.logger.warning(f"Відсутні або недостатньо даних для аналізу {symbol} ({len(df)} свічок). Мінімум потрібно: {min_candles_for_analysis}")
                 return {'symbol': symbol, 'action': 'NO_DATA'}
             
             latest_candle_validation_dict = df.iloc[-1].to_dict() # Перетворення на словник
